@@ -1,9 +1,9 @@
-name: Security Check
+name: Test
 
 on:
   push:
     branches:
-      - master
+      - main
   workflow_dispatch:
 
 # Secret scan to detect scan in code using detect secret.
