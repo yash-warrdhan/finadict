@@ -1,0 +1,139 @@
+name: Security Check
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+# Secret scan to detect scan in code using detect secret.
+jobs:
+  secret_scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y diffutils jq python3 python3-pip
+          python -m pip install detect-secrets
+          python3 -m pip install tabulate
+          python -m pip install --upgrade pip
+          
+      - name: Run Detect Secrets Scan
+        run: |
+          detect-secrets scan --exclude-files '\.git/.*' --exclude-files '\.gitmodules' >> detect_secrets_output.txt
+      
+
+      - name: Parse Detect Secrets Output
+        id: parse_output
+        run: |
+          import json
+          import os
+          import sys
+          from tabulate import tabulate
+          with open("detect_secrets_output.txt", "r") as file:
+              data = file.read()
+          data_json = json.loads(data)
+          if not data_json:
+              sys.exit(0)
+              
+          table = []  # Initialize an empty table
+          table_headers = ["Secret Type", "File", "Hashed Secret", "Line Number"]
+          for file, secrets in data_json["results"].items():
+              for secret in secrets:
+                  if not isinstance(secret, dict):
+                    continue
+                  secret_type = secret.get("type", "NA")
+                  filename = secret.get("filename", "NA")
+                  hashed_secret = secret.get("hashed_secret", "NA")
+                  line_number = secret.get("line_number", "NA")
+                  row = [secret_type, filename, hashed_secret, line_number]
+                  table.append(row)
+                     
+          print(tabulate(table, headers=table_headers, tablefmt='grid'))
+          secrets_found = len(table) > 0
+          if secrets_found:
+              sys.exit(1)
+        shell: python
+        
+                      
+# Bandit for Source Code Review
+  # Bandit for Source Code Review
+  Bandit:
+    name: Bandit Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.8
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit
+          pip install tabulate
+      - name: Security check - Bandit
+        run: |
+          bandit -r . > bandit_report.txt || true
+      - name: Parse Bandit report
+        run: |
+          import re
+          import textwrap
+          import json
+          import sys
+          from tabulate import tabulate
+          # Specify the file path
+          file_path = 'bandit_report.txt'
+          # To store the table rows
+          table_rows = []
+          # Open and read the file
+          with open(file_path, 'r') as file:
+              issue, severity, cwe, location = "", "", "", ""
+              collecting_info = False
+              for line in file:
+                  if 'Issue' in line:
+                      issue = textwrap.fill(line.split(': ')[1].strip(), width=40)
+                  elif 'Severity' in line:
+                      severity = line.split(': ')[1].strip().split(' ')[0]  # Take only severity, exclude 'Confidence'
+                  elif 'CWE' in line:
+                      cwe = textwrap.fill(line.split(': ')[1].strip(), width=70)  # Capture everything after "CWE:"
+                  elif 'Location' in line:
+                      location = textwrap.fill(line.split(': ')[1].strip(), width=30)
+                      collecting_info = True  # Start collecting info after 'Location'
+                  elif '---------------------------' in line:
+                      collecting_info = False  # Stop collecting info when encountering the delimiter
+                      # Assuming this is the end of the current issue, so we add the row to the list of rows and reset the variables for the next issue.
+                      table_rows.append([issue, severity, cwe, location])
+                      issue, severity, cwe, location = "", "", "", ""
+                  elif collecting_info:
+                      # Append all additional lines of information to the "Location" for the current issue
+                      location += "\n" + textwrap.fill(line.strip(), width=50)
+          # Convert to JSON
+          json_data = json.dumps(table_rows)
+          # Parse JSON
+          parsed_json = json.loads(json_data)
+          # Custom sort function
+          severity_order = {'High': 0, 'Medium': 1, 'Low': 2}
+          # Sort the rows
+          sorted_rows = sorted(parsed_json, key=lambda x: severity_order[x[1]])
+          # Specify the table headers
+          table_headers = ["Issue", "Severity", "CWE", "Location"]
+          
+          # Print the table
+          print(tabulate(sorted_rows, headers=table_headers, tablefmt='grid'))
+          # Check if any high severity issues were found
+          if any(row[1] == 'High' for row in sorted_rows):
+              print('Please check your code for the Security risk found.')
+              sys.exit(1)
+        shell: python
